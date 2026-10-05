@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
+import { requireAdminAuth } from '@/lib/auth';
+import { sanitizeString, validatePincode } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,7 +12,8 @@ export async function GET(req: NextRequest) {
     const subtotal = Number(searchParams.get('subtotal') || 0);
 
     if (pincode) {
-      const calculation = relationalDb.calculateDeliveryFeeForPincode(pincode, subtotal);
+      const cleanPincode = sanitizeString(pincode, 10);
+      const calculation = relationalDb.calculateDeliveryFeeForPincode(cleanPincode, Math.max(0, subtotal));
       return NextResponse.json({
         success: true,
         data: calculation,
@@ -30,21 +33,40 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const auth = requireAdminAuth(req, 'MANAGE_SETTINGS');
+    if ('errorResponse' in auth) return auth.errorResponse;
+
+    const body = await req.json().catch(() => ({}));
     const { name, pincodes, deliveryFee, minOrder, maxDistanceKm } = body;
 
-    if (!name || !Array.isArray(pincodes) || typeof deliveryFee !== 'number') {
-      return NextResponse.json({ success: false, error: 'Invalid zone payload' }, { status: 400 });
+    const cleanName = sanitizeString(name, 100);
+    const numDeliveryFee = Number(deliveryFee);
+
+    if (!cleanName || !Array.isArray(pincodes) || isNaN(numDeliveryFee)) {
+      return NextResponse.json({ success: false, error: 'Valid zone name, pincodes array, and delivery fee required' }, { status: 400 });
     }
 
+    const validatedPincodes = pincodes
+      .map((p: any) => p.toString().trim())
+      .filter((p: string) => validatePincode(p));
+
     const created = relationalDb.createDeliveryZone({
-      name,
-      pincodes,
-      delivery_fee: deliveryFee,
-      min_order: minOrder || 299,
-      max_distance_km: maxDistanceKm || 15,
+      name: cleanName,
+      pincodes: validatedPincodes,
+      delivery_fee: Math.max(0, numDeliveryFee),
+      min_order: Math.max(0, Number(minOrder) || 299),
+      max_distance_km: Math.max(1, Number(maxDistanceKm) || 15),
       is_active: 1,
     });
+
+    relationalDb.logAudit(
+      auth.session.id,
+      auth.session.name,
+      'DELIVERY_ZONE_CREATED',
+      'DeliveryZone',
+      created.id,
+      `Created delivery zone '${cleanName}'`
+    );
 
     return NextResponse.json({
       success: true,
@@ -58,14 +80,18 @@ export async function POST(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { id, updates } = body;
+    const auth = requireAdminAuth(req, 'MANAGE_SETTINGS');
+    if ('errorResponse' in auth) return auth.errorResponse;
 
-    if (!id || !updates) {
+    const body = await req.json().catch(() => ({}));
+    const { id, updates } = body;
+    const cleanId = sanitizeString(id, 50);
+
+    if (!cleanId || !updates) {
       return NextResponse.json({ success: false, error: 'ID and updates required' }, { status: 400 });
     }
 
-    const updated = relationalDb.updateDeliveryZone(id, updates);
+    const updated = relationalDb.updateDeliveryZone(cleanId, updates);
     return NextResponse.json({
       success: Boolean(updated),
       data: updated,

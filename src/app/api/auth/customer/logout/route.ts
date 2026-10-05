@@ -1,13 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import { clearCustomerCookie } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(req: NextRequest) {
+export async function POST() {
   const response = NextResponse.json({
     success: true,
-    message: 'Successfully logged out',
+    message: 'Logged out successfully',
   });
 
-  response.cookies.delete('vindu_customer_session');
+  clearCustomerCookie(response);
   return response;
 }

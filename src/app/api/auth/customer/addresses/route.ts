@@ -1,28 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
+import { requireCustomerAuth } from '@/lib/auth';
+import { sanitizeString, validateAndFormatPhone, validatePincode } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
-function getCustomerIdFromReq(req: NextRequest): string | null {
-  const authHeader = req.headers.get('authorization');
-  const cookieToken = req.cookies.get('vindu_customer_session')?.value;
-  const token = (authHeader ? authHeader.replace('Bearer ', '') : '') || cookieToken;
-  if (!token) return null;
-  try {
-    const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
-    return decoded.id || null;
-  } catch {
-    return token;
-  }
-}
-
 export async function GET(req: NextRequest) {
-  const customerId = getCustomerIdFromReq(req);
-  if (!customerId) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-  }
+  const auth = requireCustomerAuth(req);
+  if ('errorResponse' in auth) return auth.errorResponse;
 
-  const customer = relationalDb.getCustomerById(customerId);
+  const customer = relationalDb.getCustomerById(auth.session.id);
   return NextResponse.json({
     success: true,
     data: customer?.addresses || [],
@@ -31,12 +18,10 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const customerId = getCustomerIdFromReq(req);
-    if (!customerId) {
-      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = requireCustomerAuth(req);
+    if ('errorResponse' in auth) return auth.errorResponse;
 
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const {
       label,
       fullName,
@@ -51,24 +36,50 @@ export async function POST(req: NextRequest) {
       isDefault,
     } = body;
 
-    if (!fullName || !phone || !houseFlat || !street || !area || !pincode) {
+    const cleanFullName = sanitizeString(fullName, 100);
+    const cleanHouse = sanitizeString(houseFlat, 150);
+    const cleanStreet = sanitizeString(street, 150);
+    const cleanArea = sanitizeString(area, 100);
+    const cleanCity = sanitizeString(city || 'Hyderabad', 60);
+    const cleanState = sanitizeString(state || 'Telangana', 60);
+    const cleanPincode = (pincode || '').toString().trim();
+    const cleanInstructions = sanitizeString(instructions, 300);
+
+    if (!cleanFullName || !phone || !cleanHouse || !cleanStreet || !cleanArea || !cleanPincode) {
       return NextResponse.json(
         { success: false, error: 'Please provide all required address fields' },
         { status: 400 }
       );
     }
 
-    const created = relationalDb.addCustomerAddress(customerId, {
-      label: label || 'Home',
-      full_name: fullName,
-      phone,
-      house_flat: houseFlat,
-      street,
-      area,
-      city: city || 'Hyderabad',
-      state: state || 'Telangana',
-      pincode,
-      instructions,
+    const phoneVal = validateAndFormatPhone(phone);
+    if (!phoneVal.valid) {
+      return NextResponse.json(
+        { success: false, error: 'Please enter a valid 10-digit mobile number' },
+        { status: 400 }
+      );
+    }
+
+    if (!validatePincode(cleanPincode)) {
+      return NextResponse.json(
+        { success: false, error: 'Please enter a valid 6-digit postal pincode' },
+        { status: 400 }
+      );
+    }
+
+    const validLabel = ['Home', 'Work', 'Other'].includes(label) ? label : 'Home';
+
+    const created = relationalDb.addCustomerAddress(auth.session.id, {
+      label: validLabel,
+      full_name: cleanFullName,
+      phone: phoneVal.formatted,
+      house_flat: cleanHouse,
+      street: cleanStreet,
+      area: cleanArea,
+      city: cleanCity,
+      state: cleanState,
+      pincode: cleanPincode,
+      instructions: cleanInstructions,
       is_default: Boolean(isDefault),
     });
 
@@ -76,7 +87,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Failed to add address' }, { status: 400 });
     }
 
-    const customer = relationalDb.getCustomerById(customerId);
+    const customer = relationalDb.getCustomerById(auth.session.id);
     return NextResponse.json({
       success: true,
       data: {

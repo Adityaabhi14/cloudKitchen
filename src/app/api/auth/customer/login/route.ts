@@ -1,28 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
+import { checkRateLimit, RATE_LIMITS } from '@/lib/rateLimiter';
+import { signCustomerSession, setCustomerCookie } from '@/lib/auth';
+import { sanitizeString, validateEmail, validateAndFormatPhone } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    // 1. Rate limiting check
+    const rateLimit = checkRateLimit(req, RATE_LIMITS.AUTH);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Too many authentication attempts. Please try again in ${rateLimit.resetInSeconds} seconds.`,
+        },
+        { status: 429 }
+      );
+    }
+
+    const body = await req.json().catch(() => ({}));
     const { googleId, email, name, profileImage, phone, credential } = body;
 
-    // Support both direct Google profile or credential payload
-    let resolvedGoogleId = googleId;
-    let resolvedEmail = email;
-    let resolvedName = name;
-    let resolvedImage = profileImage;
+    let resolvedGoogleId = typeof googleId === 'string' ? sanitizeString(googleId, 100) : '';
+    let resolvedEmail = typeof email === 'string' ? sanitizeString(email, 120) : '';
+    let resolvedName = typeof name === 'string' ? sanitizeString(name, 100) : '';
+    let resolvedImage = typeof profileImage === 'string' ? profileImage.trim() : '';
 
-    // Decode JWT payload if credential was passed from Google Identity Services
+    // Decode and parse JWT payload if Google Identity Services credential token is passed
     if (credential && typeof credential === 'string') {
       try {
         const parts = credential.split('.');
         if (parts.length === 3) {
           const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
-          if (payload.sub) resolvedGoogleId = payload.sub;
-          if (payload.email) resolvedEmail = payload.email;
-          if (payload.name) resolvedName = payload.name;
+          if (payload.sub) resolvedGoogleId = sanitizeString(payload.sub, 100);
+          if (payload.email) resolvedEmail = sanitizeString(payload.email, 120);
+          if (payload.name) resolvedName = sanitizeString(payload.name, 100);
           if (payload.picture) resolvedImage = payload.picture;
         }
       } catch (err) {
@@ -30,7 +44,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (!resolvedEmail) {
+    if (!resolvedEmail || !validateEmail(resolvedEmail)) {
       return NextResponse.json(
         { success: false, error: 'Valid Google email is required for customer authentication' },
         { status: 400 }
@@ -45,33 +59,32 @@ export async function POST(req: NextRequest) {
       resolvedName = resolvedEmail.split('@')[0];
     }
 
+    let sanitizedPhone: string | undefined = undefined;
+    if (phone) {
+      const phoneValidation = validateAndFormatPhone(phone);
+      if (phoneValidation.valid) {
+        sanitizedPhone = phoneValidation.formatted;
+      }
+    }
+
     // Find or create customer record in database
     const customer = relationalDb.findOrCreateCustomerByGoogle({
       googleId: resolvedGoogleId,
       email: resolvedEmail,
       name: resolvedName,
       profileImage: resolvedImage,
-      phone,
+      phone: sanitizedPhone,
     });
 
     if (customer.status === 'BLOCKED') {
       return NextResponse.json(
-        { success: false, error: 'Your account is suspended. Please contact customer care.' },
+        { success: false, error: 'Your account is suspended. Please contact customer support.' },
         { status: 403 }
       );
     }
 
-    const sessionPayload = {
-      id: customer.id,
-      googleId: customer.google_id,
-      email: customer.email,
-      name: customer.name,
-      profileImage: customer.profile_image,
-      phone: customer.phone,
-      issuedAt: Date.now(),
-    };
-
-    const token = Buffer.from(JSON.stringify(sessionPayload)).toString('base64');
+    // Sign a tamper-proof session token
+    const token = signCustomerSession(customer);
 
     const response = NextResponse.json({
       success: true,
@@ -96,14 +109,8 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Set HTTP session cookie for seamless Next.js session persistence
-    response.cookies.set('vindu_customer_session', token, {
-      httpOnly: false,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 30, // 30 days
-    });
+    // Set secure HTTP-only cookie
+    setCustomerCookie(response, token);
 
     return response;
   } catch (error: any) {

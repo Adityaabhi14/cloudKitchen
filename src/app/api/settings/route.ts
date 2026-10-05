@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
 import { formatKitchenSettings, normalizeSettingsUpdate } from '@/lib/formatters';
+import { requireAdminAuth } from '@/lib/auth';
+import { sanitizeString } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,17 +30,29 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
-    const body = await req.json();
+    const auth = requireAdminAuth(req, 'MANAGE_SETTINGS');
+    if ('errorResponse' in auth) return auth.errorResponse;
+
+    const body = await req.json().catch(() => ({}));
     const { settings: rawSettings, newUnit } = body;
 
     let updatedSettings = null;
-    if (rawSettings) {
+    if (rawSettings && typeof rawSettings === 'object') {
       const normalized = normalizeSettingsUpdate(rawSettings);
       const updatedRecord = relationalDb.updateSettings(normalized);
       updatedSettings = formatKitchenSettings(updatedRecord);
+
+      relationalDb.logAudit(
+        auth.session.id,
+        auth.session.name,
+        'SETTINGS_UPDATED',
+        'Settings',
+        'kitchen_settings',
+        'Updated kitchen operational settings'
+      );
     }
-    if (newUnit) {
-      relationalDb.addUnit(newUnit);
+    if (newUnit && typeof newUnit === 'string') {
+      relationalDb.addUnit(sanitizeString(newUnit, 30));
     }
 
     const currentRecord = relationalDb.getSettings();

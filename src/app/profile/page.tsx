@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Navbar from '@/components/Navbar';
@@ -44,7 +44,7 @@ const ORDER_STATUS_MAP: Record<string, { label: string; bg: string; text: string
   CANCELLED: { label: 'Cancelled', bg: 'bg-[#F5F5F5]', text: 'text-[#757575]', border: 'border-[#E0E0E0]' },
 };
 
-export default function CustomerProfilePage() {
+function CustomerProfileContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialTab = searchParams.get('tab') || 'profile';
@@ -1157,5 +1157,19 @@ export default function CustomerProfilePage() {
       <Footer />
       <CustomerAuthModal />
     </div>
+  );
+}
+
+export default function CustomerProfilePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-[#FAF5ED] flex items-center justify-center">
+          <div className="w-10 h-10 border-3 border-[#C9281C] border-t-transparent rounded-full animate-spin" />
+        </div>
+      }
+    >
+      <CustomerProfileContent />
+    </Suspense>
   );
 }

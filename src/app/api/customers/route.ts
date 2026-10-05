@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
+import { requireAdminAuth } from '@/lib/auth';
+import { sanitizeString } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const auth = requireAdminAuth(req, 'MANAGE_CUSTOMERS');
+    if ('errorResponse' in auth) return auth.errorResponse;
+
     const customers = relationalDb.getCustomers();
     return NextResponse.json({
       success: true,
@@ -21,8 +26,13 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { id, notes, status } = body;
+    const auth = requireAdminAuth(req, 'MANAGE_CUSTOMERS');
+    if ('errorResponse' in auth) return auth.errorResponse;
+
+    const body = await req.json().catch(() => ({}));
+    const id = sanitizeString(body.id, 50);
+    const notes = body.notes !== undefined ? sanitizeString(body.notes, 500) : undefined;
+    const status = body.status === 'BLOCKED' ? 'BLOCKED' : body.status === 'ACTIVE' ? 'ACTIVE' : undefined;
 
     if (!id) {
       return NextResponse.json(
@@ -38,6 +48,15 @@ export async function PUT(req: NextRequest) {
     if (status) {
       relationalDb.toggleCustomerStatus(id, status);
     }
+
+    relationalDb.logAudit(
+      auth.session.id,
+      auth.session.name,
+      'CUSTOMER_UPDATED',
+      'Customer',
+      id,
+      `Admin updated customer ID ${id}`
+    );
 
     return NextResponse.json({
       success: true,

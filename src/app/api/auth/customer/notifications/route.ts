@@ -1,25 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
+import { requireCustomerAuth } from '@/lib/auth';
+import { sanitizeString } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
-function getCustomerIdFromReq(req: NextRequest): string | null {
-  const authHeader = req.headers.get('authorization');
-  const cookieToken = req.cookies.get('vindu_customer_session')?.value;
-  const token = (authHeader ? authHeader.replace('Bearer ', '') : '') || cookieToken;
-  if (!token) return null;
-  try {
-    const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
-    return decoded.id || null;
-  } catch {
-    return token;
-  }
-}
-
 export async function GET(req: NextRequest) {
   try {
-    const customerId = getCustomerIdFromReq(req) || 'ALL';
-    const notifications = relationalDb.getNotifications(customerId);
+    const auth = requireCustomerAuth(req);
+    if ('errorResponse' in auth) return auth.errorResponse;
+
+    const notifications = relationalDb.getNotifications(auth.session.id);
     return NextResponse.json({
       success: true,
       data: notifications,
@@ -32,8 +23,11 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { notificationId } = body;
+    const auth = requireCustomerAuth(req);
+    if ('errorResponse' in auth) return auth.errorResponse;
+
+    const body = await req.json().catch(() => ({}));
+    const notificationId = sanitizeString(body.notificationId, 50);
 
     if (notificationId) {
       const ok = relationalDb.markNotificationRead(notificationId);

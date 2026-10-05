@@ -1,31 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
+import { requireCustomerAuth } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
-function getCustomerIdFromReq(req: NextRequest): string | null {
-  const authHeader = req.headers.get('authorization');
-  const cookieToken = req.cookies.get('vindu_customer_session')?.value;
-  const token = (authHeader ? authHeader.replace('Bearer ', '') : '') || cookieToken;
-  if (!token) return null;
-  try {
-    const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
-    return decoded.id || null;
-  } catch {
-    return token;
-  }
-}
-
 export async function GET(req: NextRequest) {
   try {
-    const customerId = getCustomerIdFromReq(req);
-    if (!customerId) {
-      return NextResponse.json({ success: false, error: 'Unauthorized: Please log in to view your orders' }, { status: 401 });
-    }
+    const auth = requireCustomerAuth(req);
+    if ('errorResponse' in auth) return auth.errorResponse;
 
-    const customer = relationalDb.getCustomerById(customerId);
-    if (!customer) {
-      return NextResponse.json({ success: false, error: 'Customer not found' }, { status: 404 });
+    const customer = relationalDb.getCustomerById(auth.session.id);
+    if (!customer || customer.status === 'BLOCKED') {
+      return NextResponse.json({ success: false, error: 'Customer account suspended or not found' }, { status: 404 });
     }
 
     const orders = relationalDb.getCustomerOrders(customer.id);

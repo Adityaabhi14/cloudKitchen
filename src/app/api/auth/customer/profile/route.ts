@@ -1,30 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
+import { requireCustomerAuth } from '@/lib/auth';
+import { sanitizeString, validateAndFormatPhone } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
-function getCustomerIdFromReq(req: NextRequest): string | null {
-  const authHeader = req.headers.get('authorization');
-  const cookieToken = req.cookies.get('vindu_customer_session')?.value;
-  const token = (authHeader ? authHeader.replace('Bearer ', '') : '') || cookieToken;
-  if (!token) return null;
-  try {
-    const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
-    return decoded.id || null;
-  } catch {
-    return token;
-  }
-}
-
 export async function GET(req: NextRequest) {
-  const customerId = getCustomerIdFromReq(req);
-  if (!customerId) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-  }
+  const auth = requireCustomerAuth(req);
+  if ('errorResponse' in auth) return auth.errorResponse;
 
-  const customer = relationalDb.getCustomerById(customerId);
-  if (!customer) {
-    return NextResponse.json({ success: false, error: 'Customer not found' }, { status: 404 });
+  const customer = relationalDb.getCustomerById(auth.session.id);
+  if (!customer || customer.status === 'BLOCKED') {
+    return NextResponse.json({ success: false, error: 'Customer not found or blocked' }, { status: 404 });
   }
 
   return NextResponse.json({
@@ -49,21 +36,48 @@ export async function GET(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   try {
-    const customerId = getCustomerIdFromReq(req);
-    if (!customerId) {
-      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = requireCustomerAuth(req);
+    if ('errorResponse' in auth) return auth.errorResponse;
 
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const { name, phone, notificationsEnabled, marketingEnabled, profileImage } = body;
 
-    const updated = relationalDb.updateCustomerProfile(customerId, {
-      name,
-      phone,
-      notifications_enabled: notificationsEnabled,
-      marketing_enabled: marketingEnabled,
-      profile_image: profileImage,
-    });
+    const updates: {
+      name?: string;
+      phone?: string;
+      notifications_enabled?: boolean;
+      marketing_enabled?: boolean;
+      profile_image?: string;
+    } = {};
+
+    if (typeof name === 'string' && name.trim()) {
+      updates.name = sanitizeString(name, 100);
+    }
+
+    if (phone !== undefined) {
+      if (typeof phone === 'string' && phone.trim()) {
+        const phoneVal = validateAndFormatPhone(phone);
+        if (phoneVal.valid) {
+          updates.phone = phoneVal.formatted;
+        }
+      } else if (phone === null || phone === '') {
+        updates.phone = undefined;
+      }
+    }
+
+    if (typeof notificationsEnabled === 'boolean') {
+      updates.notifications_enabled = notificationsEnabled;
+    }
+
+    if (typeof marketingEnabled === 'boolean') {
+      updates.marketing_enabled = marketingEnabled;
+    }
+
+    if (typeof profileImage === 'string' && profileImage.trim()) {
+      updates.profile_image = profileImage.trim();
+    }
+
+    const updated = relationalDb.updateCustomerProfile(auth.session.id, updates);
 
     if (!updated) {
       return NextResponse.json({ success: false, error: 'Failed to update profile' }, { status: 400 });

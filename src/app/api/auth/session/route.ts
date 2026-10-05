@@ -1,28 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { relationalDb } from '@/../database/db';
+import { verifyAdminSession } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   try {
-    const authHeader = req.headers.get('authorization');
-    const cookieToken = req.cookies.get('vindu_admin_session')?.value;
-    const token = (authHeader ? authHeader.replace('Bearer ', '') : '') || cookieToken;
+    const session = verifyAdminSession(req);
 
-    if (!token) {
+    if (!session) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized: No active session' },
+        { success: false, error: 'Unauthorized: No active or valid admin session' },
         { status: 401 }
       );
     }
 
-    // Lookup admin in database
-    const admins = relationalDb.getAdmins();
-    const activeAdmin = admins.find(a => a.status === 'ACTIVE');
-
-    if (!activeAdmin) {
+    const admin = relationalDb.getAdmins().find(a => a.id === session.id);
+    if (!admin || admin.status !== 'ACTIVE') {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized: Session invalid' },
+        { success: false, error: 'Unauthorized: Admin account is inactive or disabled' },
         { status: 401 }
       );
     }
@@ -30,11 +26,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        id: activeAdmin.id,
-        username: activeAdmin.username,
-        name: activeAdmin.name,
-        role: activeAdmin.role,
-        token,
+        id: admin.id,
+        username: admin.username,
+        name: admin.name,
+        role: admin.role,
+        permissions: session.permissions,
       },
     });
   } catch (error: any) {

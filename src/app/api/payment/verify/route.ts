@@ -1,14 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { checkRateLimit, RATE_LIMITS } from '@/lib/rateLimiter';
+import { sanitizeString, timingSafeCompare } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    // 1. Rate limiting
+    const rateLimit = checkRateLimit(req, RATE_LIMITS.PAYMENT);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        { success: false, error: `Too many payment verification requests. Retry in ${rateLimit.resetInSeconds}s.` },
+        { status: 429 }
+      );
+    }
+
+    const body = await req.json().catch(() => ({}));
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = body;
 
-    if (!razorpay_order_id || !razorpay_payment_id) {
+    const safeOrderId = sanitizeString(razorpay_order_id, 80);
+    const safePaymentId = sanitizeString(razorpay_payment_id, 80);
+    const safeSignature = typeof razorpay_signature === 'string' ? razorpay_signature.trim() : '';
+
+    if (!safeOrderId || !safePaymentId) {
       return NextResponse.json(
         { success: false, error: 'Missing payment details for verification' },
         { status: 400 }
@@ -17,14 +32,14 @@ export async function POST(req: NextRequest) {
 
     const keySecret = process.env.RAZORPAY_KEY_SECRET;
 
-    if (keySecret && razorpay_signature) {
-      // Cryptographic HMAC SHA-256 verification
+    if (keySecret && safeSignature) {
+      // Cryptographic HMAC SHA-256 verification using timing-safe comparison
       const expectedSignature = crypto
         .createHmac('sha256', keySecret)
-        .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+        .update(`${safeOrderId}|${safePaymentId}`)
         .digest('hex');
 
-      const isAuthentic = expectedSignature === razorpay_signature;
+      const isAuthentic = timingSafeCompare(expectedSignature, safeSignature);
 
       if (!isAuthentic) {
         return NextResponse.json(
@@ -37,8 +52,16 @@ export async function POST(req: NextRequest) {
         success: true,
         verified: true,
         message: 'Payment verified securely',
-        paymentId: razorpay_payment_id,
+        paymentId: safePaymentId,
       });
+    }
+
+    // In production without keys, return warning if signature is absent
+    if (process.env.NODE_ENV === 'production' && keySecret && !safeSignature) {
+      return NextResponse.json(
+        { success: false, error: 'Payment signature is required in production environment' },
+        { status: 400 }
+      );
     }
 
     // Sandbox mock verification
@@ -47,11 +70,11 @@ export async function POST(req: NextRequest) {
       verified: true,
       isSandbox: true,
       message: 'Sandbox payment verified',
-      paymentId: razorpay_payment_id || `pay_mok_${Date.now()}`,
+      paymentId: safePaymentId || `pay_mok_${Date.now()}`,
     });
   } catch (error: any) {
     return NextResponse.json(
-      { success: false, error: error.message || 'Payment verification failed' },
+      { success: false, error: 'Payment verification failed' },
       { status: 500 }
     );
   }

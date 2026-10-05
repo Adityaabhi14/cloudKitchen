@@ -40,8 +40,9 @@ export function CustomerAuthProvider({ children }: { children: ReactNode }) {
     try {
       const res = await fetch('/api/auth/customer/session');
       const data = await res.json();
-      if (data.success && data.data?.user) {
-        setUser(data.data.user);
+      const customerData = data.data?.user || data.data;
+      if (data.success && customerData && customerData.email) {
+        setUser(customerData);
       } else {
         setUser(null);
       }

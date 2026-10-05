@@ -1,18 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import { clearAdminCookie } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(req: NextRequest) {
+export async function POST() {
   const response = NextResponse.json({
     success: true,
     message: 'Logged out successfully',
   });
 
-  response.cookies.set('vindu_admin_session', '', {
-    httpOnly: false,
-    path: '/',
-    expires: new Date(0),
-  });
-
+  clearAdminCookie(response);
   return response;
 }
